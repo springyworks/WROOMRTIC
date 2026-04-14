@@ -4,12 +4,33 @@ Bare-metal RTIC v2 demo for **ESP32-WROOM-32** (Xtensa, no_std).
 
 ## What it does
 
-1. **WiFi AP** — broadcasts SSID `WROOMRTIC` (open, channel 1), serves an HTTP status page on `http://192.168.4.1/`
-2. **Morse heartbeat** — blinks a two-character status code on the blue LED (GPIO2) every ~5 seconds
-3. **DAC→ADC loopback** — ramps DAC1 (GPIO25) through 11 voltage steps, reads each with ADC1 (GPIO34), prints results
-4. **BOOT button** — hardware GPIO interrupt prints on press
+1. **WiFi AP + Captive Portal** — broadcasts SSID `WROOMRTIC` (open, channel 1), with DHCP, DNS spoofing, and captive portal redirect so phones auto-show the landing page
+2. **Web Shell** — interactive terminal at `http://192.168.4.1/` with commands for LED, DAC, ADC, status, and an ASCII worms screensaver
+3. **Morse heartbeat** — blinks a two-character status code on the blue LED (GPIO2) every ~5 seconds
+4. **DAC→ADC loopback** — ramps DAC1 (GPIO25) through 11 voltage steps, reads each with ADC1 (GPIO34), prints results
+5. **BOOT button** — hardware GPIO interrupt prints on press
 
 WiFi polling is interleaved with the heartbeat loop (every ~10ms), so both run cooperatively in idle.
+
+## Captive Portal
+
+All DNS queries resolve to `192.168.4.1`. Captive portal probes from Android (`/generate_204`), iOS (`/hotspot-detect`, `/success.html`), and Windows (`/ncsi.txt`, `/connecttest`, `/success.txt`) are intercepted with 302 redirects to the landing page. Any other URL also serves the shell page — there is no internet, only WROOM.
+
+## Web Shell Commands
+
+| Command | Description |
+|---------|-------------|
+| `help` | Show all commands |
+| `status` | Uptime, cycle count, heartbeat, WiFi |
+| `led <on\|off>` | Control onboard blue LED |
+| `dac <0-255>` | Set DAC output (GPIO25) |
+| `adc` | Read ADC value (GPIO34) |
+| `ping` | Connectivity check |
+| `uptime` | Milliseconds since boot |
+| `info` | Hardware info |
+| `echo <text>` | Echo text back |
+| `screensaver` | ASCII worms animation (any key stops) |
+| `clear` | Clear screen (local) |
 
 ## Pin assignments
 
@@ -68,16 +89,16 @@ The firmware starts a WiFi access point on boot:
 | Security | Open (no password) |
 | Channel | 1 |
 | IP address | **192.168.4.1** |
-| HTTP | Port 80 — status page |
+| DHCP | Auto (192.168.4.100+, MAC-based) |
+| DNS | All queries → 192.168.4.1 |
+| HTTP | Port 80 — captive portal + web shell |
 
 ### Connecting from a phone
 
 1. Open WiFi settings, connect to **WROOMRTIC**
-2. Set a **static IP** (no DHCP server):
-   - IP: `192.168.4.2`
-   - Subnet: `255.255.255.0`
-   - Gateway: `192.168.4.1`
-3. Open a browser to `http://192.168.4.1/`
+2. DHCP assigns an IP automatically (192.168.4.100+)
+3. The captive portal popup should appear — tap to open the web shell
+4. Or open any URL in a browser — all routes lead to the shell
 
 ### Connecting via adb
 
@@ -91,7 +112,9 @@ adb shell curl http://192.168.4.1/
 
 - WiFi uses **esp-wifi 0.15.1** with the built-in preemptive scheduler (TIMG0 timer)
 - TCP/IP stack: **smoltcp 0.12** (no_std, polled from idle loop)
-- No DHCP server — clients must set a static IP in 192.168.4.0/24
+- Built-in DHCP server assigns IPs deterministically from client MAC
+- DNS spoof responds to all A-record queries with 192.168.4.1
+- Captive portal intercepts OS connectivity checks with 302 redirects
 - The `EspWifiController` and `WifiController` are stored in `StaticCell`s for `'static` lifetime
 - During RTIC `init`, PS.INTLEVEL is temporarily lowered to 0 for esp-wifi (which requires interrupts enabled), then restored before RTIC post-init
 
@@ -115,20 +138,7 @@ Press `Ctrl+]` (espflash/picocom) or `Ctrl+A K` (screen) to exit.
 
 ### Can we send commands over serial?
 
-**Not yet** — the current firmware is output-only (`esp-println`). There is no command parser or UART RX handler. However the hardware fully supports it:
-
-- UART0 TX+RX are both wired through the CP210x to USB
-- `esp-hal` provides `Uart::new()` with RX interrupt support
-- An RTIC hardware task can bind to `UART0` interrupts for RX
-
-To add a serial shell, you would:
-
-1. Create a `Uart` peripheral in `init()` (instead of relying on `esp-println`'s implicit UART)
-2. Add a `#[task(binds = UART0, ...)]` hardware task for RX interrupts
-3. Buffer incoming bytes in a ring buffer, parse commands on `\r` or `\n`
-4. Dispatch commands from the shell task (e.g., change Morse status code, trigger ADC read, set DAC value)
-
-This is a natural next feature — an interactive serial console that can change the heartbeat status code live, read/write DAC, and trigger ADC samples on demand.
+**Not yet** — the current firmware is output-only (`esp-println`). Commands are sent via the web shell at `http://192.168.4.1/`. A serial shell (UART0 RX interrupt + ring buffer) is a natural next feature.
 
 ## Target
 

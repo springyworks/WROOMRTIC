@@ -154,9 +154,9 @@ mod app {
 
         // TCP socket for HTTP server — static buffers
         static TCP_RX: StaticCell<[u8; 2048]> = StaticCell::new();
-        static TCP_TX: StaticCell<[u8; 2048]> = StaticCell::new();
+        static TCP_TX: StaticCell<[u8; 4096]> = StaticCell::new();
         let tcp_rx: &'static mut [u8] = TCP_RX.init([0; 2048]);
-        let tcp_tx: &'static mut [u8] = TCP_TX.init([0; 2048]);
+        let tcp_tx: &'static mut [u8] = TCP_TX.init([0; 4096]);
         let tcp_socket = tcp::Socket::new(
             tcp::SocketBuffer::new(tcp_rx),
             tcp::SocketBuffer::new(tcp_tx),
@@ -454,8 +454,9 @@ mod app {
         "*{margin:0;padding:0;box-sizing:border-box}",
         "body{background:#111;color:#0f0;font:14px/1.4 monospace;height:100vh;",
         "display:flex;flex-direction:column}",
-        "#t{flex:1;overflow-y:auto;padding:8px;white-space:pre-wrap}",
-        "#b{display:flex;padding:4px;background:#000;border-top:1px solid #030}",
+        "#t{flex:1;overflow-y:auto;padding:8px 8px 40px;white-space:pre-wrap}",
+        "#b{position:fixed;bottom:0;left:0;right:0;display:flex;padding:4px;",
+        "background:#000;border-top:1px solid #030;z-index:10}",
         "#i{flex:1;background:#000;color:#0f0;border:0;outline:0;font:inherit;padding:0 4px}",
         "</style></head><body>",
         "<div id=t></div>",
@@ -463,17 +464,44 @@ mod app {
         "<input id=i autofocus></div>",
         "<script>",
         "var t=document.getElementById('t'),i=document.getElementById('i');",
+        "document.body.onclick=function(){i.focus()};",
         "function w(s,c){var d=document.createElement('div');",
         "d.textContent=s;if(c)d.style.color=c;t.appendChild(d);t.scrollTop=1e9}",
         "w('WROOMRTIC Shell v1.0','#0f0');",
         "w('ESP32-WROOM-32 | RTIC v2 | bare-metal');",
         "w('Type help for commands');w('');",
+        "var ss=0,worms=[];",
+        "function stopSS(){ss=0;worms=[];t.innerHTML='';w('Screensaver stopped.','#0a0')}",
+        "function runSS(){if(!ss)return;",
+        "var W=Math.floor(t.clientWidth/8.4),H=Math.floor((t.clientHeight-40)/19.6);",
+        "if(W<2||H<2)return;",
+        "if(!worms.length){t.innerHTML='';",
+        "for(var n=0;n<5;n++)worms.push({x:Math.floor(Math.random()*W),",
+        "y:Math.floor(Math.random()*H),",
+        "c:['#0f0','#0a0','#0d0','#080','#0f0'][n],",
+        "ch:'~@#*o'.charAt(n),trail:[]})}",
+        "var g=[];for(var y=0;y<H;y++){g[y]=[];for(var x=0;x<W;x++)g[y][x]=' '}",
+        "worms.forEach(function(wr){",
+        "var dx=[1,-1,0,0],dy=[0,0,1,-1],r=Math.floor(Math.random()*4);",
+        "wr.x=(wr.x+dx[r]+W)%W;wr.y=(wr.y+dy[r]+H)%H;",
+        "wr.trail.push({x:wr.x,y:wr.y});",
+        "if(wr.trail.length>20)wr.trail.shift();",
+        "wr.trail.forEach(function(p){if(p.y<H&&p.x<W)g[p.y][p.x]=wr.ch})});",
+        "t.innerHTML='';var html='';",
+        "for(var y=0;y<H;y++)html+=g[y].join('')+'\\n';",
+        "var pre=document.createElement('pre');",
+        "pre.style.cssText='color:#0f0;margin:0;line-height:1.4';",
+        "pre.textContent=html;t.appendChild(pre);",
+        "setTimeout(runSS,150)}",
         "i.onkeydown=function(e){if(e.key!='Enter')return;",
-        "var c=i.value.trim();if(!c)return;i.value='';w('> '+c,'#0a0');",
+        "var c=i.value.trim();if(!c)return;i.value='';",
+        "if(ss){stopSS();return}",
+        "w('> '+c,'#0a0');",
         "if(c=='clear'){t.innerHTML='';return}",
         "fetch('/cmd?c='+encodeURIComponent(c))",
         ".then(function(r){return r.text()})",
-        ".then(function(s){s.split('\\n').forEach(function(l){w(l)})})",
+        ".then(function(s){if(s=='__WORM__'){ss=1;worms=[];runSS();return}",
+        "s.split('\\n').forEach(function(l){w(l)})})",
         ".catch(function(){w('ERR: disconnected','#f00')})};",
         "var m=0;setInterval(function(){fetch('/ping')",
         ".then(function(){m=0})",
@@ -529,6 +557,7 @@ mod app {
                 "  uptime        ms since boot\n",
                 "  info          hardware info\n",
                 "  echo <text>   echo text back\n",
+                "  screensaver   ASCII worms (any key stops)\n",
                 "  clear         clear screen (local)",
             )),
             "status" => format!(
@@ -566,6 +595,7 @@ mod app {
                 let rest = cmd.strip_prefix("echo").unwrap_or("").trim();
                 String::from(rest)
             },
+            "screensaver" => String::from("__WORM__"),
             _ => format!("Unknown: {}\nType 'help' for commands", verb),
         }
     }
@@ -605,16 +635,15 @@ mod app {
                         "/"
                     };
 
-                    // Android /generate_204 → return 204 so WiFi is marked VALIDATED
-                    // (otherwise browser routes through mobile data = "connection refused")
-                    // Other portal probes → 302 redirect to our shell
-                    if path.contains("/generate_204") {
-                        let r = "HTTP/1.1 204 No Content\r\nConnection:close\r\n\r\n";
-                        let _ = socket.send_slice(r.as_bytes());
-                    } else if path.contains("/hotspot-detect")
+                    // Intercept ALL captive-portal probes with 302 → landing page.
+                    // This forces Android, iOS, and Windows to show "Sign in to network".
+                    if path.contains("/generate_204")
+                        || path.contains("/hotspot-detect")
                         || path.contains("/ncsi.txt")
                         || path.contains("/connecttest")
-                        || path.contains("/success.txt") {
+                        || path.contains("/success.txt")
+                        || path.contains("/success.html") {
+                        println!("[HTTP] 302 portal redirect: {}", path);
                         let r = "HTTP/1.1 302 Found\r\nLocation:http://192.168.4.1/\r\nConnection:close\r\nContent-Length:0\r\n\r\n";
                         let _ = socket.send_slice(r.as_bytes());
                     } else if path == "/ping" {
@@ -635,14 +664,18 @@ mod app {
                         );
                         let _ = socket.send_slice(r.as_bytes());
                     } else {
-                        // Serve terminal shell page
+                        // Serve terminal shell page for any unknown path
+                        println!("[HTTP] 200 shell page: {}", path);
                         let _ = socket.send_slice(TERMINAL_HTML.as_bytes());
                     }
                     socket.close();
                 }
             }
         }
-        if !socket.is_open() {
+        // Re-listen aggressively: is_active() is false for Closed, Listen,
+        // and TIME_WAIT states. This avoids the 30+ second TIME_WAIT delay
+        // that blocks subsequent HTTP requests (ping, cmd, page loads).
+        if !socket.is_active() {
             socket.abort();
             let _ = socket.listen(80);
         }
