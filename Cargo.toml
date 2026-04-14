@@ -1,0 +1,37 @@
+[package]
+name = "wroomrtic"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[features]
+xtensa-esp32-backend = ["rtic/xtensa-esp32-backend"]
+
+[dependencies]
+esp-alloc = "0.8"
+esp-backtrace = { version = "0.17.0", features = [
+    "esp32",
+    "panic-handler",
+    "exception-handler",
+    "println",
+] }
+esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32"] }
+esp-hal = { version = "=1.0.0-rc.0", features = ["esp32", "unstable"] }
+esp-println = { version = "0.15.0", features = ["esp32"] }
+esp-wifi = { version = "0.15.1", features = ["wifi", "esp32", "builtin-scheduler", "smoltcp"] }
+esp32 = { version = "0.40.0", features = ["critical-section"] }
+critical-section = "1"
+nb = "1"
+rtic = { path = "../rtic/rtic/" }
+smoltcp = { version = "0.12", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+] }
+static_cell = "2"
+
+[profile.dev.package.esp-wifi]
+opt-level = 3
