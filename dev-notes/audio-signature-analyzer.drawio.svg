@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg1.1.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     version="1.1" width="920" height="680" viewBox="-10 -10 920 680">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333"/>
+    </marker>
+    <marker id="arrow-grn" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2a7"/>
+    </marker>
+    <marker id="arrow-org" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#d80"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="450" y="25" text-anchor="middle" font-family="monospace" font-size="18" font-weight="bold" fill="#111">Audio Signature Analyzer — Signal Flow</text>
+  <text x="450" y="45" text-anchor="middle" font-family="monospace" font-size="11" fill="#666">ESP32-WROOM-32 (Xtensa LX6 dual-core @ 240MHz) → FM synthesis → Web Audio</text>
+
+  <!-- ===== CORE 0 — RTIC (left column) ===== -->
+  <rect x="20" y="65" width="400" height="560" rx="12" fill="#f0f8f0" stroke="#2a7" stroke-width="2"/>
+  <text x="220" y="88" text-anchor="middle" font-family="monospace" font-size="14" font-weight="bold" fill="#2a7">CORE 0 — RTIC v2 (active)</text>
+
+  <!-- CCOUNT block -->
+  <rect x="50" y="105" width="160" height="60" rx="6" fill="#dff" stroke="#088" stroke-width="1.5"/>
+  <text x="130" y="128" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#055">CCOUNT</text>
+  <text x="130" y="145" text-anchor="middle" font-family="monospace" font-size="9" fill="#055">240MHz cycle counter</text>
+  <text x="130" y="157" text-anchor="middle" font-family="monospace" font-size="9" fill="#088">rsr.ccount → u32</text>
+
+  <!-- CCOMPARE block -->
+  <rect x="240" y="105" width="160" height="60" rx="6" fill="#dff" stroke="#088" stroke-width="1.5"/>
+  <text x="320" y="128" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#055">CCOMPARE0/1/2</text>
+  <text x="320" y="145" text-anchor="middle" font-family="monospace" font-size="9" fill="#055">cycle match → IRQ</text>
+  <text x="320" y="157" text-anchor="middle" font-family="monospace" font-size="9" fill="#088">periodic sampling</text>
+
+  <!-- Delta computation -->
+  <rect x="50" y="195" width="160" height="50" rx="6" fill="#ffe" stroke="#a80" stroke-width="1.5"/>
+  <text x="130" y="217" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#850">Δ = cc[n] - cc[n-1]</text>
+  <text x="130" y="233" text-anchor="middle" font-family="monospace" font-size="9" fill="#850">typ. 30-300 cycles</text>
+  <line x1="130" y1="165" x2="130" y2="195" stroke="#088" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Jitter sources -->
+  <rect x="240" y="195" width="160" height="90" rx="6" fill="#fff0e0" stroke="#d80" stroke-width="1.5"/>
+  <text x="320" y="213" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#a60">Jitter Sources</text>
+  <text x="320" y="230" text-anchor="middle" font-family="monospace" font-size="9" fill="#a60">• cache hit/miss</text>
+  <text x="320" y="244" text-anchor="middle" font-family="monospace" font-size="9" fill="#a60">• WiFi DMA contention</text>
+  <text x="320" y="258" text-anchor="middle" font-family="monospace" font-size="9" fill="#a60">• IRQ preemption</text>
+  <text x="320" y="272" text-anchor="middle" font-family="monospace" font-size="9" fill="#a60">• flash wait states</text>
+  <line x1="240" y1="240" x2="210" y2="220" stroke="#d80" stroke-width="1.2" marker-end="url(#arrow-org)"/>
+
+  <!-- FM Modulator -->
+  <rect x="50" y="275" width="160" height="65" rx="6" fill="#e8e0ff" stroke="#60a" stroke-width="1.5"/>
+  <text x="130" y="298" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#408">FM Modulator</text>
+  <text x="130" y="313" text-anchor="middle" font-family="monospace" font-size="9" fill="#408">carrier: 220Hz</text>
+  <text x="130" y="327" text-anchor="middle" font-family="monospace" font-size="9" fill="#408">step = 1802 + (Δ &amp; 0xFFF)</text>
+  <line x1="130" y1="245" x2="130" y2="275" stroke="#a80" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Phase Accumulator -->
+  <rect x="50" y="370" width="160" height="50" rx="6" fill="#e8e0ff" stroke="#60a" stroke-width="1.5"/>
+  <text x="130" y="393" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#408">Phase Accumulator</text>
+  <text x="130" y="408" text-anchor="middle" font-family="monospace" font-size="9" fill="#408">16.16 fixed-point</text>
+  <line x1="130" y1="340" x2="130" y2="370" stroke="#60a" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Triangle wave -->
+  <rect x="50" y="450" width="160" height="50" rx="6" fill="#e8e0ff" stroke="#60a" stroke-width="1.5"/>
+  <text x="130" y="470" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#408">Triangle Wave</text>
+  <text x="130" y="486" text-anchor="middle" font-family="monospace" font-size="9" fill="#408">8-bit unsigned PCM</text>
+  <line x1="130" y1="420" x2="130" y2="450" stroke="#60a" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- HTTP /audio endpoint -->
+  <rect x="50" y="530" width="160" height="50" rx="6" fill="#efe" stroke="#2a7" stroke-width="1.5"/>
+  <text x="130" y="553" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#185">GET /audio</text>
+  <text x="130" y="568" text-anchor="middle" font-family="monospace" font-size="9" fill="#185">1024 bytes @ 8kHz</text>
+  <line x1="130" y1="500" x2="130" y2="530" stroke="#2a7" stroke-width="1.5" marker-end="url(#arrow-grn)"/>
+
+  <!-- ===== CORE 1 — potential monitor (middle) ===== -->
+  <rect x="240" y="310" width="160" height="180" rx="6" fill="#fff8e8" stroke="#c90" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="320" y="333" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#960">CORE 1 (future)</text>
+  <text x="320" y="352" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">dedicated bus monitor</text>
+  <line x1="260" y1="366" x2="380" y2="366" stroke="#c90" stroke-width="0.5"/>
+  <text x="320" y="382" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">• DBREAKA0/1</text>
+  <text x="320" y="396" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">  (addr watchpoints)</text>
+  <text x="320" y="412" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">• ICOUNT</text>
+  <text x="320" y="426" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">  (instruction counter)</text>
+  <text x="320" y="442" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">• PRID register</text>
+  <text x="320" y="458" text-anchor="middle" font-family="monospace" font-size="9" fill="#960">• perf counters</text>
+  <text x="320" y="478" text-anchor="middle" font-family="monospace" font-size="9" fill="#c90">→ real-time anomaly</text>
+
+  <!-- ===== WiFi / Browser (right column) ===== -->
+  <rect x="470" y="65" width="420" height="560" rx="12" fill="#f0f0ff" stroke="#44a" stroke-width="2"/>
+  <text x="680" y="88" text-anchor="middle" font-family="monospace" font-size="14" font-weight="bold" fill="#44a">WiFi → Browser (Web Audio API)</text>
+
+  <!-- WiFi AP -->
+  <rect x="500" y="110" width="170" height="50" rx="6" fill="#ddf" stroke="#44a" stroke-width="1.5"/>
+  <text x="585" y="133" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#228">WiFi AP: WROOMRTIC</text>
+  <text x="585" y="148" text-anchor="middle" font-family="monospace" font-size="9" fill="#228">192.168.4.1 (smoltcp)</text>
+
+  <!-- Phone 1 -->
+  <rect x="500" y="190" width="170" height="50" rx="6" fill="#eef" stroke="#66a" stroke-width="1.5"/>
+  <text x="585" y="210" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#44a">📱 Android #1</text>
+  <text x="585" y="227" text-anchor="middle" font-family="monospace" font-size="9" fill="#44a">fetch('/audio') loop</text>
+  <line x1="585" y1="160" x2="585" y2="190" stroke="#44a" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+  <!-- Phone 2 -->
+  <rect x="700" y="190" width="170" height="50" rx="6" fill="#eef" stroke="#66a" stroke-width="1.5"/>
+  <text x="785" y="210" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#44a">📱 Android #2</text>
+  <text x="785" y="227" text-anchor="middle" font-family="monospace" font-size="9" fill="#44a">fetch('/audio') loop</text>
+  <line x1="670" y1="140" x2="785" y2="190" stroke="#44a" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+  <!-- AudioContext -->
+  <rect x="500" y="270" width="360" height="55" rx="6" fill="#e8e0ff" stroke="#60a" stroke-width="1.5"/>
+  <text x="680" y="293" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#408">AudioContext (per browser)</text>
+  <text x="680" y="310" text-anchor="middle" font-family="monospace" font-size="9" fill="#408">createBuffer(1, 1024, 8000) → BufferSource → GainNode(0.03) → destination</text>
+  <line x1="585" y1="240" x2="585" y2="270" stroke="#60a" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="785" y1="240" x2="785" y2="270" stroke="#60a" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+  <!-- Speaker -->
+  <rect x="580" y="355" width="200" height="45" rx="6" fill="#efe" stroke="#2a7" stroke-width="1.5"/>
+  <text x="680" y="378" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#185">🔈 3% volume output</text>
+  <text x="680" y="393" text-anchor="middle" font-family="monospace" font-size="9" fill="#185">FM tone shifts with MCU load</text>
+  <line x1="680" y1="325" x2="680" y2="355" stroke="#2a7" stroke-width="1.2" marker-end="url(#arrow-grn)"/>
+
+  <!-- DSP pipeline detail -->
+  <rect x="500" y="430" width="370" height="175" rx="8" fill="#f8f8ff" stroke="#99a" stroke-width="1"/>
+  <text x="685" y="452" text-anchor="middle" font-family="monospace" font-size="11" font-weight="bold" fill="#446">DSP Pipeline Detail</text>
+  <line x1="510" y1="460" x2="860" y2="460" stroke="#99a" stroke-width="0.5"/>
+  <text x="515" y="478" font-family="monospace" font-size="10" fill="#446">1. rsr.ccount → cc[n]           (1 cycle)</text>
+  <text x="515" y="494" font-family="monospace" font-size="10" fill="#446">2. Δ = cc[n] - cc[n-1]          (1 cycle)</text>
+  <text x="515" y="510" font-family="monospace" font-size="10" fill="#446">3. mod = Δ &amp; 0xFFF              (mask 12 bits)</text>
+  <text x="515" y="526" font-family="monospace" font-size="10" fill="#446">4. step = 1802 + mod            (FM deviation)</text>
+  <text x="515" y="542" font-family="monospace" font-size="10" fill="#446">5. phase += step                (16.16 accum)</text>
+  <text x="515" y="558" font-family="monospace" font-size="10" fill="#446">6. tri(phase[15:8])             (triangle LUT)</text>
+  <text x="515" y="574" font-family="monospace" font-size="10" fill="#446">7. → u8 PCM sample              (8kHz rate)</text>
+  <text x="515" y="594" font-family="monospace" font-size="10" fill="#888">Loop: 1024 samples ≈ 30,000 cycles ≈ 125μs</text>
+
+  <!-- Cross-link: HTTP to WiFi -->
+  <line x1="210" y1="555" x2="500" y2="140" stroke="#2a7" stroke-width="2" stroke-dasharray="8,4" marker-end="url(#arrow-grn)"/>
+  <text x="360" y="340" text-anchor="middle" font-family="monospace" font-size="9" fill="#2a7" transform="rotate(-42,360,340)">HTTP response (1024 bytes PCM)</text>
+
+  <!-- Legend -->
+  <rect x="20" y="635" width="870" height="25" rx="4" fill="#f8f8f8" stroke="#ccc" stroke-width="1"/>
+  <text x="30" y="652" font-family="monospace" font-size="9" fill="#088">■ Xtensa registers</text>
+  <text x="180" y="652" font-family="monospace" font-size="9" fill="#a60">■ Bus jitter</text>
+  <text x="290" y="652" font-family="monospace" font-size="9" fill="#408">■ DSP/FM</text>
+  <text x="380" y="652" font-family="monospace" font-size="9" fill="#185">■ Network I/O</text>
+  <text x="500" y="652" font-family="monospace" font-size="9" fill="#44a">■ Browser audio</text>
+  <text x="640" y="652" font-family="monospace" font-size="9" fill="#960">▪ ▪ ▪ Future (core 1 monitor)</text>
+</svg>
