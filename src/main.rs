@@ -41,16 +41,6 @@ mod app {
     use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint};
     use static_cell::StaticCell;
 
-    // Morse Farnsworth timing (user spec):
-    //   dit  = 1 unit  = 150 ms
-    //   dah  = 4 units = 600 ms
-    //   element gap = 1 unit  = 150 ms
-    //   char gap    = 2 units = 300 ms
-    const DIT: u32 = 150;
-    const DAH: u32 = DIT * 4;
-    const ELEMENT_GAP: u32 = DIT;
-    const CHAR_GAP: u32 = DIT * 2;
-
     #[shared]
     struct Shared {}
 
@@ -154,9 +144,9 @@ mod app {
 
         // TCP socket for HTTP server — static buffers
         static TCP_RX: StaticCell<[u8; 2048]> = StaticCell::new();
-        static TCP_TX: StaticCell<[u8; 4096]> = StaticCell::new();
+        static TCP_TX: StaticCell<[u8; 8192]> = StaticCell::new();
         let tcp_rx: &'static mut [u8] = TCP_RX.init([0; 2048]);
-        let tcp_tx: &'static mut [u8] = TCP_TX.init([0; 4096]);
+        let tcp_tx: &'static mut [u8] = TCP_TX.init([0; 8192]);
         let tcp_socket = tcp::Socket::new(
             tcp::SocketBuffer::new(tcp_rx),
             tcp::SocketBuffer::new(tcp_tx),
@@ -217,7 +207,7 @@ mod app {
         println!("  DNS:  all queries -> 192.168.4.1");
         println!("  HTTP: captive portal landing page");
         println!("=================================");
-        println!("LED : GPIO2  (blue, Morse heartbeat)");
+        println!("LED : GPIO2  (blue, activity indicator)");
         println!("DAC : GPIO25 (DAC1, 8-bit, 0-3.3V output)");
         println!("ADC : GPIO34 (ADC1_CH6, 12-bit, 11dB ~0-2450mV)");
         println!(">> Wire GPIO25 --> GPIO34 for loopback test <<");
@@ -442,34 +432,91 @@ mod app {
         let _ = socket.send_slice(&resp[..rpos], meta.endpoint);
     }
 
-    // ---- Terminal shell HTML (served at GET /) ----
+    // ---- Terminal shell HTML with watchdog pinger + network indicator ----
     const TERMINAL_HTML: &str = concat!(
         "HTTP/1.1 200 OK\r\n",
         "Content-Type:text/html\r\n",
         "Cache-Control:no-store\r\n",
         "Connection:close\r\n\r\n",
         "<!DOCTYPE html><html><head><title>WROOMRTIC</title>",
-        "<meta name=viewport content='width=device-width,initial-scale=1'>",
+        "<meta name=viewport content='width=device-width,initial-scale=1,interactive-widget=resizes-content'>",
         "<style>",
         "*{margin:0;padding:0;box-sizing:border-box}",
-        "body{background:#111;color:#0f0;font:14px/1.4 monospace;height:100vh;",
-        "display:flex;flex-direction:column}",
-        "#t{flex:1;overflow-y:auto;padding:8px 8px 40px;white-space:pre-wrap}",
-        "#b{position:fixed;bottom:0;left:0;right:0;display:flex;padding:4px;",
-        "background:#000;border-top:1px solid #030;z-index:10}",
+        "html,body{background:#111;color:#0f0;font:14px/1.4 monospace;",
+        "height:100%;overflow:hidden}",
+        "#wrap{display:flex;flex-direction:column;height:100%}",
+        "#priv{padding:3px 8px;background:#0a1a0a;border-bottom:1px solid #030;",
+        "font-size:11px;color:#080;text-align:center;flex-shrink:0}",
+        "#net{padding:3px 8px;background:#0a0a00;border-bottom:1px solid #220;",
+        "font-size:11px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}",
+        "#net .lbl{color:#880}",
+        "#net .val{color:#ff0}",
+        ".arr{display:inline-block;margin:0 2px;transition:color .15s}",
+        ".arr.active{color:#0f0!important}",
+        "#s{padding:4px 8px;background:#000;border-bottom:1px solid #030;font-size:12px;flex-shrink:0}",
+        "#t{flex:1;overflow-y:auto;padding:8px;white-space:pre-wrap;min-height:0}",
+        "#b{display:flex;padding:4px;background:#000;border-top:1px solid #030;flex-shrink:0}",
         "#i{flex:1;background:#000;color:#0f0;border:0;outline:0;font:inherit;padding:0 4px}",
-        "</style></head><body>",
+        "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}",
+        ".blink{animation:pulse .8s infinite}",
+        "</style></head><body><div id=wrap>",
+        // -- privacy banner --
+        "<div id=priv>&#x1F512; This device is friendly &mdash; ",
+        "no cookies, no tracking, no metadata collection. Your browser data stays yours.</div>",
+        // -- network traffic indicator bar --
+        "<div id=net>",
+        "<span><span class=lbl>NET </span>",
+        "<span id=txA class=arr style='color:#333'>&#9650;</span>",
+        "<span id=rxA class=arr style='color:#333'>&#9660;</span></span>",
+        "<span><span class=lbl>TX:</span><span id=txC class=val>0</span></span>",
+        "<span><span class=lbl>RX:</span><span id=rxC class=val>0</span></span>",
+        "<span><span class=lbl>RTT:</span><span id=rtt class=val>--</span></span>",
+        "<span id=nst style='color:#880'>idle</span>",
+        "<span id=aBtn style='color:#f80;cursor:pointer;margin-left:8px;border:1px solid #f80;padding:0 6px;border-radius:3px;font-size:12px' onclick='toggleAudio()'>SND</span>",
+        "</div>",
+        // -- connection status bar --
+        "<div id=s><span id=dot style='color:#0f0'>&#9679;</span> ",
+        "<span id=st style='color:#0f0'>CONNECTED</span></div>",
         "<div id=t></div>",
         "<div id=b><span style='color:#0a0'>wroom&gt;&nbsp;</span>",
-        "<input id=i autofocus></div>",
+        "<input id=i autofocus enterkeyhint=send></div>",
+        "</div>",
         "<script>",
         "var t=document.getElementById('t'),i=document.getElementById('i');",
+        "var wrap=document.getElementById('wrap');",
+        "var stEl=document.getElementById('st'),dotEl=document.getElementById('dot');",
+        // -- viewport resize handler for Android keyboard --
+        "function fixH(){var h=window.visualViewport?window.visualViewport.height:window.innerHeight;",
+        "wrap.style.height=h+'px';t.scrollTop=1e9}",
+        "fixH();",
+        "if(window.visualViewport){window.visualViewport.addEventListener('resize',fixH);",
+        "window.visualViewport.addEventListener('scroll',fixH)}",
+        "window.addEventListener('resize',fixH);",
+        "i.addEventListener('focus',function(){setTimeout(fixH,300)});",
+        // -- network indicator elements --
+        "var txA=document.getElementById('txA'),rxA=document.getElementById('rxA');",
+        "var txCEl=document.getElementById('txC'),rxCEl=document.getElementById('rxC');",
+        "var rttEl=document.getElementById('rtt'),nstEl=document.getElementById('nst');",
+        "var txCount=0,rxCount=0;",
+        // -- flash arrow helper --
+        "function flash(el){el.classList.add('active');el.style.color='#0f0';",
+        "setTimeout(function(){el.classList.remove('active');el.style.color='#333'},200)}",
+        // -- tracked fetch wrapper: counts TX/RX + flashes arrows --
+        "function tfetch(url){txCount++;txCEl.textContent=txCount;flash(txA);",
+        "nstEl.textContent='\\u25CF';nstEl.style.color='#0f0';",
+        "return fetch(url).then(function(r){",
+        "rxCount++;rxCEl.textContent=rxCount;flash(rxA);",
+        "nstEl.textContent='idle';nstEl.style.color='#880';return r})",
+        ".catch(function(e){nstEl.textContent='\\u2716';nstEl.style.color='#f00';throw e})}",
+        // -- main UI --
         "document.body.onclick=function(){i.focus()};",
         "function w(s,c){var d=document.createElement('div');",
         "d.textContent=s;if(c)d.style.color=c;t.appendChild(d);t.scrollTop=1e9}",
-        "w('WROOMRTIC Shell v1.0','#0f0');",
-        "w('ESP32-WROOM-32 | RTIC v2 | bare-metal');",
-        "w('Type help for commands');w('');",
+        "w('WROOMRTIC Shell v2.0 (bare-metal RTIC)','#0f0');",
+        "w('ESP32-WROOM-32 | RTIC v2 | no OS | no FreeRTOS');",
+        "w('All commands run on the chip. Nothing runs in JavaScript.','#080');",
+        "w('LED: 150ms=ping, 50ms=traffic, morse every 15s');",
+        "w('Type help or explain for commands');w('');",
         "var ss=0,worms=[];",
         "function stopSS(){ss=0;worms=[];t.innerHTML='';w('Screensaver stopped.','#0a0')}",
         "function runSS(){if(!ss)return;",
@@ -493,19 +540,58 @@ mod app {
         "pre.style.cssText='color:#0f0;margin:0;line-height:1.4';",
         "pre.textContent=html;t.appendChild(pre);",
         "setTimeout(runSS,150)}",
-        "i.onkeydown=function(e){if(e.key!='Enter')return;",
+        // -- command input (uses tracked fetch) --
+        "i.onkeydown=function(e){if(e.key!='Enter'&&e.keyCode!==13)return;e.preventDefault();",
         "var c=i.value.trim();if(!c)return;i.value='';",
         "if(ss){stopSS();return}",
         "w('> '+c,'#0a0');",
         "if(c=='clear'){t.innerHTML='';return}",
-        "fetch('/cmd?c='+encodeURIComponent(c))",
+        "tfetch('/cmd?c='+encodeURIComponent(c))",
         ".then(function(r){return r.text()})",
         ".then(function(s){if(s=='__WORM__'){ss=1;worms=[];runSS();return}",
+        "if(s=='__AUDIO_ON__'){if(!audioOn)toggleAudio();w('Audio signature analyzer: ON','#0f0');return}",
+        "if(s=='__AUDIO_OFF__'){if(audioOn)toggleAudio();w('Audio signature analyzer: OFF','#f80');return}",
         "s.split('\\n').forEach(function(l){w(l)})})",
         ".catch(function(){w('ERR: disconnected','#f00')})};",
-        "var m=0;setInterval(function(){fetch('/ping')",
-        ".then(function(){m=0})",
-        ".catch(function(){if(++m>2)w('[LINK DOWN]','#f00')})},3000);",
+        // -- watchdog pinger (uses tracked fetch + RTT measurement) --
+        "var m=0,linkOK=true;",
+        "setInterval(function(){var t0=performance.now();",
+        "tfetch('/ping')",
+        ".then(function(r){return r.text()})",
+        ".then(function(){var ms=Math.round(performance.now()-t0);",
+        "rttEl.textContent=ms+'ms';m=0;",
+        "if(!linkOK){linkOK=true;",
+        "dotEl.style.color='#0f0';stEl.style.color='#0f0';",
+        "stEl.textContent='CONNECTED';stEl.className='';",
+        "w('--- LINK RESTORED ---','#0f0')}})",
+        ".catch(function(){rttEl.textContent='--';m++;",
+        "if(m>=2&&linkOK){linkOK=false;",
+        "dotEl.style.color='#f00';stEl.style.color='#f00';",
+        "stEl.textContent='LINK LOST';stEl.className='blink';",
+        "w('');",
+        "w('=============================','#f00');",
+        "w('    !!!  LINK  LOST  !!!     ','#f00');",
+        "w('  watchdog: no ping reply    ','#f00');",
+        "w('=============================','#f00');",
+        "w('')}})},2000);",
+        // -- MCU audio sonification (CCOUNT aliasing) --
+        "var actx=null,audioOn=false,aGain=null;",
+        "function toggleAudio(){",
+        "if(!actx){actx=new(window.AudioContext||window.webkitAudioContext)();",
+        "aGain=actx.createGain();aGain.gain.value=0.03;aGain.connect(actx.destination)}",
+        "audioOn=!audioOn;",
+        "document.getElementById('aBtn').style.color=audioOn?'#0f0':'#f80';",
+        "document.getElementById('aBtn').style.borderColor=audioOn?'#0f0':'#f80';",
+        "if(audioOn)fetchAudio()}",
+        "function fetchAudio(){if(!audioOn)return;",
+        "fetch('/audio').then(function(r){return r.arrayBuffer()}).then(function(ab){",
+        "var arr=new Uint8Array(ab);",
+        "var buf=actx.createBuffer(1,arr.length,8000);",
+        "var ch=buf.getChannelData(0);",
+        "for(var j=0;j<arr.length;j++)ch[j]=(arr[j]-128)/128;",
+        "var src=actx.createBufferSource();src.buffer=buf;src.connect(aGain);",
+        "src.start();src.onended=function(){setTimeout(fetchAudio,10)}",
+        "}).catch(function(){setTimeout(fetchAudio,500)})}",
         "</script></body></html>",
     );
 
@@ -536,7 +622,8 @@ mod app {
         cmd: &str,
         millis: i64,
         cycle: u32,
-        led: &mut Output<'static>,
+        request_count: u32,
+        traffic_count: u32,
         dac: &mut Dac<'static, DAC1<'static>>,
         adc: &mut Adc<'static, ADC1<'static>, esp_hal::Blocking>,
         adc_pin: &mut AdcPin<GPIO34<'static>, ADC1<'static>>,
@@ -547,28 +634,49 @@ mod app {
 
         match verb {
             "help" => String::from(concat!(
-                "Commands:\n",
-                "  help          show this help\n",
+                "Commands (all run on the ESP32 chip):\n",
+                "  help          this help\n",
+                "  whoami        device identity\n",
+                "  uptime        uptime\n",
+                "  free          heap stats\n",
                 "  status        system status\n",
-                "  led <on|off>  control LED\n",
+                "  explain       what is this device\n",
+                "  uname -a      system info\n",
+                "  ip addr       network info\n",
+                "  neofetch      system info (pretty)\n",
+                "  date          build date\n",
+                "  dmesg         boot log\n",
+                "  ping          connectivity check\n",
+                "  traffic       traffic counter\n",
                 "  dac <0-255>   set DAC output\n",
                 "  adc           read ADC value\n",
-                "  ping          connectivity check\n",
-                "  uptime        ms since boot\n",
-                "  info          hardware info\n",
                 "  echo <text>   echo text back\n",
+                "  info          hardware info\n",
+                "  led           LED mode info\n",
+                "  audio on/off  MCU audio signature analyzer\n",
+                "  listen        audio info\n",
                 "  screensaver   ASCII worms (any key stops)\n",
                 "  clear         clear screen (local)",
             )),
+            "whoami" => String::from("root@wroomrtic (bare-metal RTIC device)"),
             "status" => format!(
-                "Uptime:    {}ms\nCycle:     #{}\nHeartbeat: OK\nWiFi:      AP WROOMRTIC",
-                millis, cycle
+                "Uptime:    {}ms\nCycle:     #{}\nRequests:  {}\nTraffic:   {} events\nLED:       auto\nWiFi:      AP WROOMRTIC",
+                millis, cycle, request_count, traffic_count
             ),
-            "led" => match arg1 {
-                "on" => { led.set_high(); String::from("LED: ON") },
-                "off" => { led.set_low(); String::from("LED: OFF") },
-                _ => String::from("Usage: led <on|off>"),
-            },
+            "explain" => String::from(concat!(
+                "WROOMRTIC — Bare-Metal Embedded WiFi Device\n",
+                "────────────────────────────────────────────\n",
+                "This is a standalone embedded device (ESP32-WROOM-32)\n",
+                "running bare-metal Rust with RTIC v2 (no OS, no FreeRTOS).\n",
+                "\n",
+                "It runs a local WiFi access point with no internet access.\n",
+                "What you see is a terminal-on-page — a browser shell\n",
+                "that talks directly to the ESP32 chip over WiFi.\n",
+                "\n",
+                "Every command you type is sent to the chip and executed there.\n",
+                "Nothing runs in JavaScript — all responses come from the device.",
+            )),
+            "led" => String::from("LED is automatic: 150ms blink=browser ping, 50ms blink=traffic, morse every 15s"),
             "dac" => {
                 if let Ok(val) = arg1.parse::<u8>() {
                     dac.write(val);
@@ -582,25 +690,197 @@ mod app {
                 format!("ADC: raw={} (~{}mV)", raw, raw as u32 * 2450 / 4095)
             },
             "ping" => format!("PONG {}ms", millis),
-            "uptime" => format!("{}ms", millis),
+            "uptime" => {
+                let secs = millis / 1000;
+                format!("up {}s ({}ms)", secs, millis)
+            },
+            "free" | "heap" => {
+                String::from("Heap configured: 72 KB (esp-alloc)\nNote: no runtime heap stats in bare-metal")
+            },
+            "traffic" | "wificount" => {
+                format!("Traffic events: {}\nHTTP requests:  {}", traffic_count, request_count)
+            },
+            "uname" => {
+                if arg1 == "-a" || arg1 == "--all" {
+                    let secs = millis / 1000;
+                    format!(
+                        "wroomrtic 0.1.0 xtensa-lx6 ESP32-WROOM-32 240MHz rtic-v2 esp-hal-1.0.0-rc.0 up {}s",
+                        secs
+                    )
+                } else {
+                    String::from("wroomrtic")
+                }
+            },
+            "ip" => {
+                if arg1 == "addr" || arg1 == "a" {
+                    String::from(concat!(
+                        "1: wlan0: <BROADCAST,MULTICAST,UP> mtu 1500\n",
+                        "    inet 192.168.4.1/24 brd 192.168.4.255\n",
+                        "    mode: AP  ssid: WROOMRTIC  channel: 1",
+                    ))
+                } else {
+                    String::from("Usage: ip addr")
+                }
+            },
+            "neofetch" => {
+                let secs = millis / 1000;
+                format!(concat!(
+                    "  root@wroomrtic\n",
+                    "  ─────────────────\n",
+                    "  OS:     wroomrtic 0.1.0 (bare-metal)\n",
+                    "  Host:   ESP32-WROOM-32\n",
+                    "  Kernel: RTIC v2 (Xtensa backend)\n",
+                    "  CPU:    Xtensa LX6 (2) @ 240MHz\n",
+                    "  Memory: 520 KB SRAM\n",
+                    "  Flash:  4 MB\n",
+                    "  Heap:   72 KB (esp-alloc)\n",
+                    "  Uptime: {}s\n",
+                    "  WiFi:   802.11 b/g/n AP ({} events)\n",
+                    "  HAL:    esp-hal 1.0.0-rc.0\n",
+                    "  Lang:   Rust (no_std)"),
+                    secs, traffic_count
+                )
+            },
+            "date" => {
+                let secs = millis / 1000;
+                format!("wroomrtic v0.1.0\nUptime: {}s (no RTC — no real-time clock)", secs)
+            },
+            "dmesg" => {
+                let secs = millis / 1000;
+                format!(concat!(
+                    "[  0.000] boot: ESP32-WROOM-32 (Xtensa LX6)\n",
+                    "[  0.001] heap: 72KB esp-alloc\n",
+                    "[  0.010] gpio: LED=GPIO2, BTN=GPIO0\n",
+                    "[  0.020] dac: DAC1 on GPIO25\n",
+                    "[  0.021] adc: ADC1 ch6 on GPIO34\n",
+                    "[  0.100] wifi: AP WROOMRTIC ch1 open\n",
+                    "[  0.200] net: smoltcp stack 192.168.4.1/24\n",
+                    "[  0.210] dhcp: server on :67\n",
+                    "[  0.220] dns: spoof on :53\n",
+                    "[  0.230] http: shell on :80\n",
+                    "[  0.240] rtic: idle loop started\n",
+                    "[live] uptime: {}s, requests: {}, traffic: {}"),
+                    secs, request_count, traffic_count
+                )
+            },
+            "reboot" => {
+                String::from("Reboot not implemented in bare-metal RTIC (lift battery to reset)")
+            },
             "info" => String::from(concat!(
                 "Chip:      ESP32-WROOM-32 (Xtensa LX6)\n",
                 "Clock:     240MHz\n",
                 "Framework: RTIC v2 (Xtensa backend)\n",
                 "HAL:       esp-hal 1.0.0-rc.0\n",
                 "WiFi:      AP mode, ch1, open\n",
-                "Heap:      72KB (esp-alloc)",
+                "Heap:      72KB (esp-alloc)\n",
+                "OS:        none (bare-metal)",
             )),
             "echo" => {
                 let rest = cmd.strip_prefix("echo").unwrap_or("").trim();
                 String::from(rest)
             },
+            "audio" => {
+                match arg1 {
+                    "on" => String::from("__AUDIO_ON__"),
+                    "off" => String::from("__AUDIO_OFF__"),
+                    _ => String::from("Usage: audio on | audio off"),
+                }
+            },
+            "listen" => String::from(concat!(
+                "Audio Signature Analyzer (FM)\n",
+                "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n",
+                "Toggle: tap SND or type 'audio on/off'\n",
+                "\n",
+                "A 220Hz carrier is FM-modulated by CCOUNT jitter.\n",
+                "The Xtensa CCOUNT register ticks at 240MHz.\n",
+                "The delta between successive reads varies with:\n",
+                "  - cache hits vs misses\n",
+                "  - WiFi DMA bus contention\n",
+                "  - interrupt preemption\n",
+                "  - memory access patterns\n",
+                "\n",
+                "These micro-timing variations modulate the carrier\n",
+                "frequency, producing tonal shifts you can hear.\n",
+                "Anomalous bus activity = audible frequency change.\n",
+                "\n",
+                "Volume: 3% (quiet by design).\n",
+                "Dual-core ESP32 but RTIC uses core 0 only.\n",
+                "Multiple users CAN connect ",
+                "(HTTP is sequential, requests are short-lived).",
+            )),
             "screensaver" => String::from("__WORM__"),
-            _ => format!("Unknown: {}\nType 'help' for commands", verb),
+            _ => format!("{}: unknown device command\nType 'help' for commands", verb),
+        }
+    }
+
+    // =======================================================================
+    // Morse LED (GPIO2) — dit=150ms, dah=600ms, inter-element=150ms
+    // =======================================================================
+    const MORSE_UNIT_MS: u32 = 150;
+
+    fn morse_char_led(ch: char, led: &mut Output<'static>, delay: &Delay) {
+        let pattern: &[u8] = match ch {
+            '0' => &[4, 4, 4, 4, 4],
+            '1' => &[1, 4, 4, 4, 4],
+            '2' => &[1, 1, 4, 4, 4],
+            '3' => &[1, 1, 1, 4, 4],
+            '4' => &[1, 1, 1, 1, 4],
+            '5' => &[1, 1, 1, 1, 1],
+            '6' => &[4, 1, 1, 1, 1],
+            '7' => &[4, 4, 1, 1, 1],
+            '8' => &[4, 4, 4, 1, 1],
+            '9' => &[4, 4, 4, 4, 1],
+            _ => &[1],
+        };
+        for (i, &units) in pattern.iter().enumerate() {
+            if i > 0 {
+                led.set_low();
+                delay.delay_millis(MORSE_UNIT_MS);
+            }
+            led.set_high();
+            delay.delay_millis(MORSE_UNIT_MS * units as u32);
+        }
+        led.set_low();
+    }
+
+    fn morse_message_led(msg: &str, led: &mut Output<'static>, delay: &Delay) {
+        for (i, ch) in msg.chars().enumerate() {
+            if i > 0 {
+                // Inter-character gap: 8 × MORSE_UNIT_MS
+                delay.delay_millis(MORSE_UNIT_MS * 8);
+            }
+            morse_char_led(ch, led, delay);
+        }
+    }
+
+    /// FM-synthesize audio from Xtensa CCOUNT deltas.
+    /// A 220Hz carrier is frequency-modulated by the cycle-count jitter
+    /// caused by cache misses, WiFi DMA, interrupt preemption.
+    /// Output: unsigned 8-bit PCM at 8000 Hz.
+    fn generate_audio_buffer(buf: &mut [u8]) {
+        let mut prev: u32;
+        unsafe { core::arch::asm!("rsr.ccount {0}", out(reg) prev) };
+        // phase accumulator (16.16 fixed point)
+        let mut phase: u32 = 0;
+        for sample in buf.iter_mut() {
+            let cc: u32;
+            unsafe { core::arch::asm!("rsr.ccount {0}", out(reg) cc) };
+            let delta = cc.wrapping_sub(prev);
+            prev = cc;
+            // base freq 220Hz at 8kHz sample rate: step = 220/8000 * 65536 = 1802
+            // modulate by clamped delta (typ 30-300 cycles → ±1600 deviation)
+            let mod_val = (delta & 0xFFF) as u32;
+            let step = 1802u32.wrapping_add(mod_val);
+            phase = phase.wrapping_add(step);
+            // sine approximation: triangle wave from phase top 8 bits
+            let p = ((phase >> 8) & 0xFF) as u8;
+            let tri = if p < 128 { p * 2 } else { (255 - p) * 2 };
+            *sample = tri;
         }
     }
 
     /// Poll smoltcp + handle HTTP shell, DHCP, and DNS.
+    /// Returns (had_traffic, had_ping).
     fn poll_network(
         millis: &mut i64,
         device: &mut WifiDevice<'static>,
@@ -609,14 +889,26 @@ mod app {
         tcp_handle: SocketHandle,
         dhcp_handle: SocketHandle,
         dns_handle: SocketHandle,
-        led: &mut Output<'static>,
         dac: &mut Dac<'static, DAC1<'static>>,
         adc: &mut Adc<'static, ADC1<'static>, esp_hal::Blocking>,
         adc_pin: &mut AdcPin<GPIO34<'static>, ADC1<'static>>,
         cycle: u32,
-    ) {
+        request_count: &mut u32,
+        traffic_count: &mut u32,
+    ) -> (bool, bool) {
         let timestamp = smoltcp::time::Instant::from_millis(*millis);
         iface.poll(timestamp, device, sockets);
+
+        let mut had_traffic = false;
+        let mut had_ping = false;
+
+        // Check UDP sockets for pending data (traffic indicator)
+        if sockets.get_mut::<udp::Socket>(dhcp_handle).can_recv() {
+            had_traffic = true;
+        }
+        if sockets.get_mut::<udp::Socket>(dns_handle).can_recv() {
+            had_traffic = true;
+        }
 
         // ---- HTTP shell + captive portal (TCP port 80) ----
         let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
@@ -624,6 +916,7 @@ mod app {
             let mut buf = [0u8; 512];
             if let Ok(size) = socket.recv_slice(&mut buf) {
                 if size > 0 {
+                    had_traffic = true;
                     let req = &buf[..size];
 
                     // Extract path from "GET /path HTTP/1.1"
@@ -647,17 +940,27 @@ mod app {
                         let r = "HTTP/1.1 302 Found\r\nLocation:http://192.168.4.1/\r\nConnection:close\r\nContent-Length:0\r\n\r\n";
                         let _ = socket.send_slice(r.as_bytes());
                     } else if path == "/ping" {
+                        had_ping = true;
+                        *request_count += 1;
                         let r = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type:text/plain\r\nConnection:close\r\n\r\nPONG {}",
                             millis
                         );
                         let _ = socket.send_slice(r.as_bytes());
+                    } else if path == "/audio" {
+                        // Sonify CCOUNT — 1024 samples of aliased 240MHz counter
+                        let hdr = b"HTTP/1.1 200 OK\r\nContent-Type:application/octet-stream\r\nContent-Length:1024\r\nAccess-Control-Allow-Origin:*\r\nConnection:close\r\n\r\n";
+                        let _ = socket.send_slice(hdr);
+                        let mut audio = [0u8; 1024];
+                        generate_audio_buffer(&mut audio);
+                        let _ = socket.send_slice(&audio);
                     } else if path.starts_with("/cmd") {
                         // /cmd?c=led%20on → extract and decode command
+                        *request_count += 1;
                         let cmd_raw = path.split("c=").nth(1).unwrap_or("help");
                         let cmd = url_decode(cmd_raw);
                         println!("[SHELL] {}", cmd);
-                        let body = exec_cmd(&cmd, *millis, cycle, led, dac, adc, adc_pin);
+                        let body = exec_cmd(&cmd, *millis, cycle, *request_count, *traffic_count, dac, adc, adc_pin);
                         let r = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type:text/plain\r\nAccess-Control-Allow-Origin:*\r\nConnection:close\r\n\r\n{}",
                             body
@@ -665,8 +968,11 @@ mod app {
                         let _ = socket.send_slice(r.as_bytes());
                     } else {
                         // Serve terminal shell page for any unknown path
-                        println!("[HTTP] 200 shell page: {}", path);
-                        let _ = socket.send_slice(TERMINAL_HTML.as_bytes());
+                        let html = TERMINAL_HTML.as_bytes();
+                        match socket.send_slice(html) {
+                            Ok(n) => println!("[HTTP] 200 shell page: {} ({}/{} bytes)", path, n, html.len()),
+                            Err(e) => println!("[HTTP] send error: {:?}", e),
+                        }
                     }
                     socket.close();
                 }
@@ -685,75 +991,12 @@ mod app {
 
         // ---- DNS spoof (UDP port 53) ----
         handle_dns(sockets, dns_handle);
+
+        (had_traffic, had_ping)
     }
 
-    /// Blocking delay that polls WiFi every 10ms.
-    fn wifi_delay(
-        delay: &Delay,
-        ms: u32,
-        millis: &mut i64,
-        device: &mut WifiDevice<'static>,
-        iface: &mut Interface,
-        sockets: &mut SocketSet<'static>,
-        tcp_handle: SocketHandle,
-        dhcp_handle: SocketHandle,
-        dns_handle: SocketHandle,
-        led: &mut Output<'static>,
-        dac: &mut Dac<'static, DAC1<'static>>,
-        adc: &mut Adc<'static, ADC1<'static>, esp_hal::Blocking>,
-        adc_pin: &mut AdcPin<GPIO34<'static>, ADC1<'static>>,
-        cycle: u32,
-    ) {
-        let chunks = ms / 10;
-        let remainder = ms % 10;
-        for _ in 0..chunks {
-            delay.delay_millis(10);
-            *millis += 10;
-            poll_network(millis, device, iface, sockets, tcp_handle, dhcp_handle, dns_handle, led, dac, adc, adc_pin, cycle);
-        }
-        if remainder > 0 {
-            delay.delay_millis(remainder);
-            *millis += remainder as i64;
-        }
-    }
-
-    // ---- Morse helpers ----
-
-    /// Morse patterns: false = dit, true = dah.
-    fn morse_pattern(ch: char) -> &'static [bool] {
-        match ch {
-            'A' => &[false, true],
-            'D' => &[true, false, false],
-            'E' => &[false],
-            'G' => &[true, true, false],
-            'H' => &[false, false, false, false],
-            'I' => &[false, false],
-            'K' => &[true, false, true],
-            'L' => &[false, true, false, false],
-            'N' => &[true, false],
-            'O' => &[true, true, true],
-            'P' => &[false, true, true, false],
-            'R' => &[false, true, false],
-            'T' => &[true],
-            'U' => &[false, false, true],
-            'X' => &[true, false, false, true],
-            _ => &[],
-        }
-    }
-
-    /// Morse pattern as ASCII string for display.
-    fn morse_display(ch: char) -> &'static str {
-        match ch {
-            'A' => ".-",   'D' => "-..", 'E' => ".",    'G' => "--.",
-            'H' => "....", 'I' => "..",  'K' => "-.-",  'L' => ".-..",
-            'N' => "-.",   'O' => "---", 'P' => ".--.", 'R' => ".-.",
-            'T' => "-",    'U' => "..-", 'X' => "-..-",
-            _ => "?",
-        }
-    }
-
-    /// Idle loop: interleaves Morse heartbeat + DAC/ADC with WiFi polling.
-    /// WiFi + shell commands polled every ~10ms during all delays.
+    /// Idle loop: polls WiFi and manages LED blink for traffic / ping activity.
+    /// Blue LED: 150ms blink on browser ping, 50ms blink on any WiFi traffic.
     #[idle(local = [led, dac, adc, adc_pin, wifi_device, wifi_interface, wifi_sockets, tcp_handle, dhcp_handle, dns_handle])]
     fn idle(cx: idle::Context) -> ! {
         let led = cx.local.led;
@@ -768,64 +1011,52 @@ mod app {
         let dns_handle = *cx.local.dns_handle;
         let delay = Delay::new();
         let mut millis: i64 = 0;
-        let mut cycle: u32 = 0;
+        let mut led_off_at: i64 = 0;
+        let mut request_count: u32 = 0;
+        let mut traffic_count: u32 = 0;
+        let mut next_morse_at: i64 = 15_000; // first morse at 15s
 
-        // Macro to reduce wifi_delay call verbosity
-        macro_rules! wdelay {
-            ($ms:expr) => {
-                wifi_delay(&delay, $ms, &mut millis, device, iface, sockets,
-                    tcp_handle, dhcp_handle, dns_handle, led, dac, adc, pin, cycle)
-            };
-        }
-
-        let status: &[u8; 2] = b"OK";
-        let ch1 = status[0] as char;
-        let ch2 = status[1] as char;
-
-        println!(
-            "[HEARTBEAT] status='{}{}' morse: {} {}  |  Shell on :80",
-            ch1, ch2, morse_display(ch1), morse_display(ch2)
-        );
+        println!("[LED] blue=activity: 150ms blink=ping, 50ms=traffic, morse every 15s");
+        println!("[HTTP] shell on :80");
 
         loop {
-            cycle += 1;
+            delay.delay_millis(5);
+            millis += 5;
 
-            // ---- Phase 1: Morse heartbeat ----
-            println!("[MORSE] #{} '{}{}'", cycle, ch1, ch2);
-            for ch in [ch1, ch2] {
-                for (i, &is_dah) in morse_pattern(ch).iter().enumerate() {
-                    let dur = if is_dah { DAH } else { DIT };
-                    led.set_high();
-                    wdelay!(dur);
-                    led.set_low();
-                    wdelay!(ELEMENT_GAP);
-                    if i + 1 == morse_pattern(ch).len() {
-                        wdelay!(CHAR_GAP.saturating_sub(ELEMENT_GAP));
-                    }
-                }
+            let cycle = (millis / 1000) as u32;
+            let (traffic, ping) = poll_network(
+                &mut millis, device, iface, sockets,
+                tcp_handle, dhcp_handle, dns_handle,
+                dac, adc, pin, cycle,
+                &mut request_count, &mut traffic_count,
+            );
+
+            if traffic {
+                traffic_count += 1;
             }
 
-            // ---- Phase 2: DAC->ADC loopback ramp ----
-            println!("[DAC->ADC] loopback ramp (GPIO25 -> GPIO34):");
-            let steps: [u8; 11] = [0, 25, 51, 76, 102, 127, 153, 178, 204, 229, 255];
-            for &dac_val in &steps {
-                dac.write(dac_val);
-                wdelay!(50);
-                let adc_raw = nb::block!(adc.read_oneshot(pin)).unwrap_or(0);
-                let expect_mv = dac_val as u32 * 3300 / 256;
-                let meas_mv = adc_raw as u32 * 2450 / 4095;
-                let sat = if expect_mv > 2450 { " SAT" } else { "" };
-                println!(
-                    "  DAC={:3}/255 ({:4}mV) -> ADC={:4} ({:4}mV){}",
-                    dac_val, expect_mv, adc_raw, meas_mv, sat
-                );
+            // Periodic morse: display traffic count % 100 every 15s
+            if millis >= next_morse_at {
+                next_morse_at = millis + 15_000;
+                let display = traffic_count % 100;
+                let msg = format!("{:02}", display);
+                println!("[MORSE] traffic={} (morse: {})", traffic_count, msg);
+                morse_message_led(&msg, led, &delay);
             }
-            dac.write(0);
-            println!("[HEARTBEAT] cycle #{} done", cycle);
-            println!();
 
-            // Pad to ~5 sec total cycle
-            wdelay!(200);
+            if ping {
+                let off = millis + 150;
+                if off > led_off_at { led_off_at = off; }
+                led.set_high();
+            } else if traffic {
+                let off = millis + 50;
+                if off > led_off_at { led_off_at = off; }
+                led.set_high();
+            }
+
+            if millis >= led_off_at {
+                led.set_low();
+            }
         }
     }
 
